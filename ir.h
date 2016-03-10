@@ -4,6 +4,7 @@
 #include <string>
 #include <stack>
 #include <iostream>
+#include <array>
 
 #pragma pack(push, 1) // exact fit - no padding
 
@@ -95,9 +96,38 @@ class NodeList {
 
   const uintptr_t size;
 
-  static constexpr unsigned gapsCacheSize = 8;
-  NodeList* gapsCache[gapsCacheSize];
-  unsigned numGaps = 0;
+  // Keeps a list of gaps in this NodeList for faster dtr and
+  // totalSize(). If the list overflows we go the slow way and
+  // find the sublists by inspecting all gaps.
+  class GapsCache {
+    static constexpr unsigned gapsCacheSize = 8;
+    unsigned numGaps = 0;
+    std::array<NodeList*, gapsCacheSize> gapsCache;
+
+   public:
+    void add(NodeList* l) {
+      if (numGaps < gapsCacheSize)
+        gapsCache[numGaps] = l;
+      numGaps++;
+    }
+
+    bool overflow() {
+      return numGaps > gapsCacheSize;
+    }
+
+    std::array<NodeList*, gapsCacheSize>::iterator begin() {
+      return gapsCache.begin();
+    }
+
+    std::array<NodeList*, gapsCacheSize>::iterator end() {
+      auto it = begin();
+      std::advance(it, numGaps);
+      return it;
+    }
+  };
+
+  GapsCache gapsCache;
+
 
   NodeList* next = nullptr;
 
@@ -105,7 +135,7 @@ class NodeList {
   size_t totalSize() {
     size_t sum = size;
 
-    if (numGaps > gapsCacheSize) {
+    if (gapsCache.overflow()) {
       uintptr_t finger = buf;
       while (true) {
         NodeList** gap = reinterpret_cast<NodeList**>(finger);
@@ -118,8 +148,8 @@ class NodeList {
         finger += n->realSize();
       }
     } else {
-      for (unsigned i = 0; i < numGaps; ++i) {
-        sum += gapsCache[i]->totalSize();
+      for (auto gap : gapsCache) {
+        sum += gap->totalSize();
       }
     }
     if (next)
@@ -135,7 +165,7 @@ class NodeList {
   }
 
   ~NodeList() {
-    if (numGaps > gapsCacheSize) {
+    if (gapsCache.overflow()) {
       uintptr_t finger = buf;
       while (true) {
         NodeList** gap = reinterpret_cast<NodeList**>(finger);
@@ -147,8 +177,8 @@ class NodeList {
         finger += n->realSize();
       }
     } else {
-      for (unsigned i = 0; i < numGaps; ++i) {
-        delete gapsCache[i];
+      for (auto gap : gapsCache) {
+        delete gap;
       }
     }
     if (next) delete next;
@@ -354,10 +384,7 @@ class NodeList {
       NodeList** gap = reinterpret_cast<NodeList**>(pos - gapSize);
       if (!*gap) {
         *gap = new NodeList();
-        if (p->numGaps < p->gapsCacheSize) {
-          p->gapsCache[p->numGaps] = *gap;
-        }
-        p->numGaps++;
+        p->gapsCache.add(*gap);
       }
       return *gap;
     }

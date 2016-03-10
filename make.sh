@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/sh -e
 
 echo "gcc"
 g++ -g3 -O3 --std c++11 -Wall ir.cpp -o ir
