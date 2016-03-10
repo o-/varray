@@ -71,7 +71,7 @@ void test(bool print = false) {
 }
 
 int main(int argc, char *argv[]) {
-  test<nodeDeque>(true);
+  // test<nodeDeque>(true);
 
   assert(argc == 3);
 

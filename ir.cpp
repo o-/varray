@@ -81,7 +81,7 @@ void test(bool print = false) {
 using namespace std;
 
 int main(int argc, char *argv[]) {
-  test(true);
+//  test(true);
 
   assert(argc == 2);
 

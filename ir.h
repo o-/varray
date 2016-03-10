@@ -86,6 +86,16 @@ size_t Node::realSize() const {
 #pragma pack(pop) // exact fit - no padding
 
 class NodeList {
+
+  /* The Node List consists of blocks and cells:
+   * - Each block is a NodeList, with ->next pointing to the next one
+   * - Each block contains a variable number of cells
+   * - Each cell contains a gap and Node. The gap is a pointer, the node is
+   *   an instruction Node stored inline.
+   * - If the gap is not null, it points to a sublist (also a NodeList) which
+   *   contains intermediate nodes
+   */
+
   static constexpr size_t defaultSize = 128*1024;
   static constexpr size_t gapSize = sizeof(NodeList*);
 
@@ -97,26 +107,26 @@ class NodeList {
 
   const uintptr_t size;
 
-  // This is used to iterate the cells of the varray
+  // iterate over cells in one block
   class flatIterator {
    public:
     uintptr_t finger_;
 
-    flatIterator(uintptr_t start, uintptr_t end) : finger_(start) {}
+    flatIterator(uintptr_t start) : finger_(start) {}
 
-    static flatIterator begin(NodeList* list) {
-      return flatIterator(list->buf + gapSize, list->pos);
+    inline static flatIterator begin(NodeList* list) {
+      return flatIterator(list->buf + gapSize);
     }
 
-    static flatIterator end(NodeList* list) {
-      return flatIterator(list->pos, list->pos);
+    inline static flatIterator end(NodeList* list) {
+      return flatIterator(list->pos);
     }
 
-    static flatIterator invalid() {
-      return flatIterator(-1, -1);
+    inline static flatIterator invalid() {
+      return flatIterator(-1);
     }
 
-    bool operator == (const flatIterator & other) {
+    bool operator == (const flatIterator & other) const {
       return finger_ == other.finger_;
     }
 
@@ -146,6 +156,7 @@ class NodeList {
     }
   };
 
+  // Iterate all cells of the current and all ->next lists
   class nextIterator {
    public:
     flatIterator it_;
@@ -155,14 +166,15 @@ class NodeList {
     nextIterator(flatIterator start, flatIterator end, NodeList* list) :
       it_(start), end_(end), cur_(list) {}
 
-    static nextIterator begin(NodeList* list) {
+    inline static nextIterator begin(NodeList* list) {
       return nextIterator(
           flatIterator::begin(list), flatIterator::end(list), list);
     }
 
-    static nextIterator end(NodeList* list) {
-      return nextIterator(
+    inline static nextIterator& end() {
+      static nextIterator theEnd(
           flatIterator::invalid(), flatIterator::invalid(), nullptr);
+      return theEnd;
     }
 
     inline void operator ++ () {
@@ -238,6 +250,7 @@ class NodeList {
     };
     GapsCache gapsCache;
 
+    // Iterate over all gaps in one block of the list
     class gapIterator {
       flatIterator it_;
       flatIterator end_;
@@ -253,11 +266,11 @@ class NodeList {
       }
 
      public:
-      static gapIterator begin(NodeList* list) {
+      inline static gapIterator begin(NodeList* list) {
         return gapIterator(flatIterator::begin(list), flatIterator::end(list));
       }
 
-      static gapIterator end(NodeList* list) {
+      inline static gapIterator end(NodeList* list) {
         return gapIterator(flatIterator::end(list), flatIterator::end(list));
       }
 
@@ -282,9 +295,8 @@ class NodeList {
 
     void foreach(NodeList* parent, std::function<void(NodeList*)> f) {
       if (gapsCache.overflow()) {
-        for (auto i = gapIterator::begin(parent);
-             i != gapIterator::end(parent);
-             ++i) {
+        auto end = gapIterator::end(parent);
+        for (auto i = gapIterator::begin(parent); i != end; ++i) {
           f(*i);
         }
       } else {
@@ -298,7 +310,6 @@ class NodeList {
 
   NodeList* next = nullptr;
 
- public:
   size_t totalSize() {
     size_t sum = size;
     gaps.foreach(this, [&sum](NodeList* gap) {
@@ -307,35 +318,6 @@ class NodeList {
     if (next)
       sum += next->totalSize();
     return sum;
-  }
-
-  NodeList(size_t initSize = defaultSize) : size(initSize) {
-    buf = (uintptr_t)new char[initSize];
-    *(NodeList**)buf = nullptr;
-    pos = buf + gapSize;
-  }
-
-  ~NodeList() {
-    gaps.foreach(this, [](NodeList* gap) {
-      delete gap;
-    });
-    if (next) delete next;
-    delete[] (char*)buf;
-  }
-
-  template<typename Node>
-  Node* insert() {
-    return new(prepareInsert(sizeof(Node))) Node();
-  }
-
-  template<typename Node, typename Arg1>
-  Node* insert(Arg1 arg1) {
-    return new(prepareInsert(sizeof(Node))) Node(arg1);
-  }
-
-  template<typename Node, typename Arg1, typename Arg2>
-  Node* insert(Arg1 arg1, Arg2 arg2) {
-    return new(prepareInsert(sizeof(Node))) Node(arg1, arg2);
   }
 
   inline void* prepareInsert(size_t s) {
@@ -371,14 +353,34 @@ class NodeList {
     return nextFree->prepareInsert(s);
   }
 
-  inline Node* insert(Node* n) {
-    size_t s = n->realSize();
-    memcpy((void*)pos, (void*)n, s);
-    auto res = (Node*)pos;
-    pos += s;
-    *(NodeList**)pos = nullptr;
-    pos += gapSize;
-    return res;
+ public:
+  NodeList(size_t initSize = defaultSize) : size(initSize) {
+    buf = (uintptr_t)new char[initSize];
+    *(NodeList**)buf = nullptr;
+    pos = buf + gapSize;
+  }
+
+  ~NodeList() {
+    gaps.foreach(this, [](NodeList* gap) {
+      delete gap;
+    });
+    if (next) delete next;
+    delete[] (char*)buf;
+  }
+
+  template<typename Node>
+  Node* insert() {
+    return new(prepareInsert(sizeof(Node))) Node();
+  }
+
+  template<typename Node, typename Arg1>
+  Node* insert(Arg1 arg1) {
+    return new(prepareInsert(sizeof(Node))) Node(arg1);
+  }
+
+  template<typename Node, typename Arg1, typename Arg2>
+  Node* insert(Arg1 arg1, Arg2 arg2) {
+    return new(prepareInsert(sizeof(Node))) Node(arg1, arg2);
   }
 
   NodeList* flatten() {
@@ -432,46 +434,68 @@ class NodeList {
     return flat;
   }
 
+  // recursively iterate over all nodes: visits all gaps and next blocks
   class iterator {
     nextIterator it_;
     nextIterator end_;
+
     std::stack<nextIterator> worklist_;
 
+    inline bool atListEnd() {
+      return !(it_ != end_);
+    }
+
     inline void findStart() {
-      while (it_ != end_ && it_.hasGap()) {
-        worklist_.push(it_);
-        worklist_.push(end_);
-        it_ = nextIterator::begin(it_.gap());
-        end_ = nextIterator::end(it_.gap());
+      while (it_.hasGap()) {
+        nextIterator n = nextIterator::begin(it_.gap());
+        if (n != nextIterator::end()) {
+          worklist_.push(it_);
+          it_ = n;
+        } else {
+          break;
+        }
       }
     }
 
-    inline void findNext() {
-      while (!(it_ != end_) && !worklist_.empty()) {
-        end_ = worklist_.top();
-        worklist_.pop();
+    inline void popNext() {
+      if (!worklist_.empty()) {
         it_ = worklist_.top();
         worklist_.pop();
       }
     }
 
     iterator(nextIterator start, nextIterator end) : it_(start), end_(end) {
-      findStart();
+      if (start != nextIterator::end())
+        findStart();
     }
+
+    inline NodeList* insertBefore(NodeList* p) {
+      if (!it_.hasGap()) {
+        it_.setGap(new NodeList);
+        p->gaps.add(it_.gap());
+      }
+      return it_.gap();
+    }
+
+    friend class NodeList;
 
    public:
-    static iterator begin(NodeList* cur) {
-      return iterator(nextIterator::begin(cur), nextIterator::end(cur));
+    inline static iterator begin(NodeList* cur) {
+      return iterator(nextIterator::begin(cur), nextIterator::end());
     }
 
-    static iterator end(NodeList* cur) {
-      return iterator(nextIterator::end(cur), nextIterator::end(cur));
+    inline static iterator& end() {
+      static iterator theEnd(nextIterator::end(), nextIterator::end());
+      return theEnd;
     }
 
     inline void operator ++ () {
       ++it_;
-      findStart();
-      findNext();
+      if (atListEnd()) {
+        popNext();
+      } else {
+        findStart();
+      }
     }
 
     inline bool operator != (const iterator& other) const {
@@ -489,21 +513,6 @@ class NodeList {
     uintptr_t curFinger() {
       return it_.it_.finger_;
     }
-
-    uintptr_t curEnd() {
-      return it_.end_.finger_;
-    }
-
-   private:
-    inline NodeList* insertBefore(NodeList* p) {
-      if (!it_.hasGap()) {
-        it_.setGap(new NodeList);
-        p->gaps.add(it_.gap());
-      }
-      return it_.gap();
-    }
-
-    friend class NodeList;
   };
 
   NodeList* insertBefore(iterator i) {
@@ -514,8 +523,8 @@ class NodeList {
     return iterator::begin(this);
   }
 
-  iterator end() {
-    return iterator::end(this);
+  inline const iterator& end() {
+    return iterator::end();
   }
 
   iterator at(size_t pos) {

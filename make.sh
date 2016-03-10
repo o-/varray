@@ -12,11 +12,6 @@ wait
 ./ir 450
 wait
 
-./ir-ll list 250
-./ir-ll list 350
-./ir-ll list 450
-wait
-
 ./ir-ll deque 250
 ./ir-ll deque 350
 ./ir-ll deque 450
@@ -34,11 +29,11 @@ wait
 ./ir 450
 wait
 
-./ir-ll list 250
-./ir-ll list 350
-./ir-ll list 450
-wait
-
 ./ir-ll deque 250
 ./ir-ll deque 350
 ./ir-ll deque 450
+wait
+
+./ir-ll list 250
+./ir-ll list 350
+./ir-ll list 450
