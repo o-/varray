@@ -5,6 +5,7 @@
 #include <stack>
 #include <iostream>
 #include <array>
+#include <functional>
 
 #pragma pack(push, 1) // exact fit - no padding
 
@@ -96,62 +97,143 @@ class NodeList {
 
   const uintptr_t size;
 
-  // Keeps a list of gaps in this NodeList for faster dtr and
-  // totalSize(). If the list overflows we go the slow way and
-  // find the sublists by inspecting all gaps.
-  class GapsCache {
-    static constexpr unsigned gapsCacheSize = 8;
-    unsigned numGaps = 0;
-    std::array<NodeList*, gapsCacheSize> gapsCache;
+  // This is used to iterate the cells of the varray
+  class flatIterator {
+    uintptr_t finger_;
+    uintptr_t end_;
+
+    flatIterator(uintptr_t start, uintptr_t end) : finger_(start), end_(end) {}
 
    public:
-    void add(NodeList* l) {
-      if (numGaps < gapsCacheSize)
-        gapsCache[numGaps] = l;
-      numGaps++;
+    static flatIterator begin(NodeList* list) {
+      return flatIterator(list->buf + gapSize, list->pos);
     }
 
-    bool overflow() {
-      return numGaps > gapsCacheSize;
+    static flatIterator end(NodeList* list) {
+      return flatIterator(list->pos, list->pos);
     }
 
-    std::array<NodeList*, gapsCacheSize>::iterator begin() {
-      return gapsCache.begin();
+    bool operator != (const flatIterator & other) {
+      return finger_ != other.finger_;
     }
 
-    std::array<NodeList*, gapsCacheSize>::iterator end() {
-      auto it = begin();
-      std::advance(it, numGaps);
-      return it;
+    void operator ++ () {
+      auto node = get();
+      finger_ += gapSize + node->realSize();
+    }
+
+    bool hasGap() {
+      return *reinterpret_cast<NodeList**>(finger_ - gapSize) != nullptr;
+    }
+
+    NodeList* gap() {
+      return *reinterpret_cast<NodeList**>(finger_ - gapSize);
+    }
+
+    Node* get() {
+      return reinterpret_cast<Node*>(finger_);
     }
   };
 
-  GapsCache gapsCache;
+  // This class is used to access the gaps
+  class Gaps {
+    // Keeps a list of gaps in this NodeList for faster dtr and
+    // totalSize(). If the list overflows we go the slow way and
+    // find the sublists by inspecting all gaps.
+    class GapsCache {
+      static constexpr unsigned gapsCacheSize = 8;
+      unsigned numGaps = 0;
+      std::array<NodeList*, gapsCacheSize> gapsCache;
 
+     public:
+      void add(NodeList* l) {
+        if (numGaps < gapsCacheSize)
+          gapsCache[numGaps] = l;
+        numGaps++;
+      }
+
+      bool overflow() {
+        return numGaps > gapsCacheSize;
+      }
+
+      std::array<NodeList*, gapsCacheSize>::iterator begin() {
+        return gapsCache.begin();
+      }
+
+      std::array<NodeList*, gapsCacheSize>::iterator end() {
+        auto it = begin();
+        std::advance(it, numGaps);
+        return it;
+      }
+    };
+    GapsCache gapsCache;
+
+    class gapIterator {
+      flatIterator it_;
+      flatIterator end_;
+
+      void findNextGap() {
+        while (it_ != end_ && !it_.hasGap())
+          ++it_;
+      }
+
+      gapIterator(flatIterator begin, flatIterator end) : it_(begin),
+                                                          end_(end) {
+        findNextGap();
+      }
+
+     public:
+      static gapIterator begin(NodeList* list) {
+        return gapIterator(flatIterator::begin(list), flatIterator::end(list));
+      }
+
+      static gapIterator end(NodeList* list) {
+        return gapIterator(flatIterator::end(list), flatIterator::end(list));
+      }
+
+      bool operator != (const gapIterator & other) {
+        return it_ != other.it_;
+      }
+
+      void operator ++ () {
+        ++it_;
+        findNextGap();
+      }
+
+      NodeList* operator * () {
+        return it_.gap();
+      }
+    };
+
+   public:
+    void add(NodeList* l) {
+      gapsCache.add(l);
+    }
+
+    void foreach(NodeList* parent, std::function<void(NodeList*)> f) {
+      if (gapsCache.overflow()) {
+        for (auto i = gapIterator::begin(parent);
+             i != gapIterator::end(parent);
+             ++i) {
+          f(*i);
+        }
+      } else {
+        for (auto g : gapsCache) {
+          f(g);
+        }
+      }
+    }
+  };
+  Gaps gaps;
 
   NodeList* next = nullptr;
 
  public:
   size_t totalSize() {
     size_t sum = size;
-
-    if (gapsCache.overflow()) {
-      uintptr_t finger = buf;
-      while (true) {
-        NodeList** gap = reinterpret_cast<NodeList**>(finger);
-        if (*gap)
-          sum += (*gap)->totalSize();
-        finger += gapSize;
-        if (finger >= pos)
-          break;
-        auto n = (Node*)finger;
-        finger += n->realSize();
-      }
-    } else {
-      for (auto gap : gapsCache) {
-        sum += gap->totalSize();
-      }
-    }
+    gaps.foreach(this, [&sum](NodeList* gap) {
+      sum += gap->totalSize();
+    });
     if (next)
       sum += next->totalSize();
     return sum;
@@ -159,28 +241,14 @@ class NodeList {
 
   NodeList(size_t initSize = defaultSize) : size(initSize) {
     buf = (uintptr_t)new char[initSize];
-
     *(NodeList**)buf = nullptr;
     pos = buf + gapSize;
   }
 
   ~NodeList() {
-    if (gapsCache.overflow()) {
-      uintptr_t finger = buf;
-      while (true) {
-        NodeList** gap = reinterpret_cast<NodeList**>(finger);
-        if (*gap) delete *gap;
-        finger += gapSize;
-        if (finger >= pos)
-          break;
-        auto n = (Node*)finger;
-        finger += n->realSize();
-      }
-    } else {
-      for (auto gap : gapsCache) {
-        delete gap;
-      }
-    }
+    gaps.foreach(this, [](NodeList* gap) {
+      delete gap;
+    });
     if (next) delete next;
     delete[] (char*)buf;
   }
@@ -384,7 +452,7 @@ class NodeList {
       NodeList** gap = reinterpret_cast<NodeList**>(pos - gapSize);
       if (!*gap) {
         *gap = new NodeList();
-        p->gapsCache.add(*gap);
+        p->gaps.add(*gap);
       }
       return *gap;
     }
