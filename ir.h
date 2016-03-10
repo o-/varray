@@ -166,10 +166,8 @@ class NodeList {
     }
 
     inline void operator ++ () {
-      if (it_ != end_) {
-        ++it_;
-        return;
-      }
+      ++it_;
+      if (it_ != end_) return;
       cur_ = cur_->next;
       if (cur_) {
         it_ = flatIterator::begin(cur_);

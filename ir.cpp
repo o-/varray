@@ -59,8 +59,10 @@ void test(bool print = false) {
   bb = bb->flatten();
 
   int count = 0;
+  int countI = 0;
   // Simulate an analysis:
   for (auto i : *bb) {
+    countI++;
     if (i->type == Node::Type::Add) {
       Node * l = ((Add*)i)->l();
       if (l->type == Node::Type::Constant) {
@@ -70,6 +72,7 @@ void test(bool print = false) {
   }
   if (print)
     std::cout << count << "\n";
+
   assert(count == 799980004);
 
   delete bb;
