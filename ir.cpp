@@ -70,6 +70,7 @@ void test(bool print = false) {
   }
   if (print)
     std::cout << count << "\n";
+  assert(count == 799980004);
 
   delete bb;
 }

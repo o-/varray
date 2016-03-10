@@ -99,12 +99,11 @@ class NodeList {
 
   // This is used to iterate the cells of the varray
   class flatIterator {
-    uintptr_t finger_;
-    uintptr_t end_;
-
-    flatIterator(uintptr_t start, uintptr_t end) : finger_(start), end_(end) {}
-
    public:
+    uintptr_t finger_;
+
+    flatIterator(uintptr_t start, uintptr_t end) : finger_(start) {}
+
     static flatIterator begin(NodeList* list) {
       return flatIterator(list->buf + gapSize, list->pos);
     }
@@ -113,26 +112,99 @@ class NodeList {
       return flatIterator(list->pos, list->pos);
     }
 
-    bool operator != (const flatIterator & other) {
+    static flatIterator invalid() {
+      return flatIterator(-1, -1);
+    }
+
+    bool operator == (const flatIterator & other) {
+      return finger_ == other.finger_;
+    }
+
+    inline bool operator != (const flatIterator & other) const {
       return finger_ != other.finger_;
     }
 
-    void operator ++ () {
+    inline void operator ++ () {
       auto node = get();
       finger_ += gapSize + node->realSize();
     }
 
-    bool hasGap() {
+    void setGap(NodeList* gap) {
+      *reinterpret_cast<NodeList**>(finger_ - gapSize) = gap;
+    }
+
+    inline bool hasGap() {
       return *reinterpret_cast<NodeList**>(finger_ - gapSize) != nullptr;
     }
 
-    NodeList* gap() {
+    inline NodeList* gap() {
       return *reinterpret_cast<NodeList**>(finger_ - gapSize);
     }
 
-    Node* get() {
+    inline Node* get() {
       return reinterpret_cast<Node*>(finger_);
     }
+  };
+
+  class nextIterator {
+   public:
+    flatIterator it_;
+    flatIterator end_;
+    NodeList* cur_;
+
+    nextIterator(flatIterator start, flatIterator end, NodeList* list) :
+      it_(start), end_(end), cur_(list) {}
+
+    static nextIterator begin(NodeList* list) {
+      return nextIterator(
+          flatIterator::begin(list), flatIterator::end(list), list);
+    }
+
+    static nextIterator end(NodeList* list) {
+      return nextIterator(
+          flatIterator::invalid(), flatIterator::invalid(), nullptr);
+    }
+
+    inline void operator ++ () {
+      if (it_ != end_) {
+        ++it_;
+        return;
+      }
+      cur_ = cur_->next;
+      if (cur_) {
+        it_ = flatIterator::begin(cur_);
+        end_ = flatIterator::end(cur_);
+      }
+    }
+
+    inline bool operator != (const nextIterator& other) const {
+      // Other is the end marker -> we are equal to the end marker
+      // if we are at end.
+      if (!other.cur_)
+        return it_ != end_;
+
+      if (!cur_)
+        return other.it_ != other.end_;
+
+      return it_ != other.it_;
+    }
+
+    void setGap(NodeList* gap) {
+      it_.setGap(gap);
+    }
+
+    bool hasGap() {
+      return it_.hasGap();
+    }
+
+    NodeList* gap() {
+      return it_.gap();
+    }
+
+    Node* get() {
+      return it_.get();
+    }
+
   };
 
   // This class is used to access the gaps
@@ -191,16 +263,16 @@ class NodeList {
         return gapIterator(flatIterator::end(list), flatIterator::end(list));
       }
 
-      bool operator != (const gapIterator & other) {
+      inline bool operator != (const gapIterator & other) const {
         return it_ != other.it_;
       }
 
-      void operator ++ () {
+      inline void operator ++ () {
         ++it_;
         findNextGap();
       }
 
-      NodeList* operator * () {
+      inline NodeList* operator * () {
         return it_.gap();
       }
     };
@@ -344,19 +416,17 @@ class NodeList {
     };
 
     auto i = begin();
-    NodeList* cur = i.cur;
-    uintptr_t bulkFixupStart = i.pos;
-    uintptr_t bulkFixupEnd = i.pos;
-    unsigned depth = 0;
+    NodeList* cur = i.cur();
+    uintptr_t bulkFixupStart = i.curFinger();
+    uintptr_t bulkFixupEnd = i.curFinger();
 
-    for (; !i.isEnd(); ++i) {
-      if (cur != i.cur || i.worklist.size() != depth) {
+    for (; i != end(); ++i) {
+      if (cur != i.cur()) {
         flat->pos = fixup(bulkFixupStart, bulkFixupEnd, flat->pos);
-        depth = i.worklist.size();
-        cur = i.cur;
-        bulkFixupStart = i.pos;
+        cur = i.cur();
+        bulkFixupStart = i.curFinger();
       }
-      bulkFixupEnd = i.pos;
+      bulkFixupEnd = i.curFinger();
     }
     flat->pos = fixup(bulkFixupStart, bulkFixupEnd, flat->pos);
     delete this;
@@ -365,113 +435,89 @@ class NodeList {
   }
 
   class iterator {
-    NodeList* cur;
-    uintptr_t pos;
-    uintptr_t end;
-    std::stack<uintptr_t> worklist;
-
-    void popWorklist() {
-        end = worklist.top();
-        worklist.pop();
-        pos = worklist.top();
-        worklist.pop();
-    }
+    nextIterator it_;
+    nextIterator end_;
+    std::stack<nextIterator> worklist_;
 
     inline void findStart() {
-      while (true) {
-        NodeList** gapPos =
-            reinterpret_cast<NodeList**>(pos - gapSize);
-        NodeList* gap = *gapPos;
-        if (!gap) {
-          break;
-        }
-        worklist.push(pos);
-        worklist.push(end);
-        pos = gap->buf + gapSize;
-        end = gap->pos;
+      while (it_ != end_ && it_.hasGap()) {
+        worklist_.push(it_);
+        worklist_.push(end_);
+        it_ = nextIterator::begin(it_.gap());
+        end_ = nextIterator::end(it_.gap());
       }
     }
 
-    iterator () {};
+    inline void findNext() {
+      while (!(it_ != end_) && !worklist_.empty()) {
+        end_ = worklist_.top();
+        worklist_.pop();
+        it_ = worklist_.top();
+        worklist_.pop();
+      }
+    }
+
+    iterator(nextIterator start, nextIterator end) : it_(start), end_(end) {
+      findStart();
+    }
 
    public:
-    static iterator theEnd() {
-      iterator i;
-      i.pos = i.end = -1;
-      return i;
+    static iterator begin(NodeList* cur) {
+      return iterator(nextIterator::begin(cur), nextIterator::end(cur));
     }
 
-    iterator(NodeList* cur) : cur(cur),
-                              pos(cur->buf + gapSize),
-                              end(cur->pos) {
-        findStart();
+    static iterator end(NodeList* cur) {
+      return iterator(nextIterator::end(cur), nextIterator::end(cur));
     }
 
-    bool operator != (iterator& other) {
-      assert((int)other.pos == -1 && (int)other.end == -1);
-      return !isEnd();
+    inline void operator ++ () {
+      ++it_;
+      findStart();
+      findNext();
     }
 
-    bool isEnd() {
-      while (pos == end && !worklist.empty()) {
-        popWorklist();
-      }
-      return worklist.empty() && pos == end;
+    inline bool operator != (const iterator& other) const {
+      return it_ != other.it_;
     }
 
-    void operator ++ () {
-      if (cur->next && pos == end) {
-        cur = cur->next;
-        pos = cur->buf + gapSize;
-        end = cur->pos;
-      }
-      if (pos == end) {
-        while (pos == end) {
-          assert(!worklist.empty());
-          popWorklist();
-        }
-        return;
-      }
-      Node* n = this->operator*();
-      pos += n->realSize() + gapSize;
-      if (pos == end) {
-        while (pos == end && !worklist.empty()) {
-          popWorklist();
-        }
-      } else {
-        findStart();
-      }
+    inline Node* operator * () {
+      return it_.get();
     }
 
-    Node* operator * () {
-      return reinterpret_cast<Node*>(pos);
+    NodeList* cur() {
+      return it_.cur_;
+    }
+
+    uintptr_t curFinger() {
+      return it_.it_.finger_;
+    }
+
+    uintptr_t curEnd() {
+      return it_.end_.finger_;
     }
 
    private:
     inline NodeList* insertBefore(NodeList* p) {
-      NodeList** gap = reinterpret_cast<NodeList**>(pos - gapSize);
-      if (!*gap) {
-        *gap = new NodeList();
-        p->gaps.add(*gap);
+      if (!it_.hasGap()) {
+        it_.setGap(new NodeList);
+        p->gaps.add(it_.gap());
       }
-      return *gap;
+      return it_.gap();
     }
 
     friend class NodeList;
   };
-
-  friend class iterator;
 
   NodeList* insertBefore(iterator i) {
     return i.insertBefore(this);
   }
 
   iterator begin() {
-    return iterator(this);
+    return iterator::begin(this);
   }
 
   iterator end() {
-    return iterator::theEnd();
+    return iterator::end(this);
   }
 
   iterator at(size_t pos) {

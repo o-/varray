@@ -65,12 +65,13 @@ void test(bool print = false) {
   }
   if (print)
     std::cout << count << "\n";
+  assert(count == 799980004);
 
   delete bb;
 }
 
 int main(int argc, char *argv[]) {
-  // test<nodeDeque>(true);
+  test<nodeDeque>(true);
 
   assert(argc == 3);
 
