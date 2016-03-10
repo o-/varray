@@ -261,6 +261,7 @@ class NodeList {
       bulkFixupEnd = i.pos;
     }
     flat->pos = fixup(bulkFixupStart, bulkFixupEnd, flat->pos);
+    delete this;
 
     return flat;
   }

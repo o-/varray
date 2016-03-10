@@ -41,28 +41,26 @@ void test(bool print = false) {
     std::cout << "===============\n";
   }
 
-  auto flat = bb->flatten();
-  delete bb;
+  bb = bb->flatten();
 
   if (print) {
-    for (auto i : *flat)
+    for (auto i : *bb)
       std::cout << *i << "\n";
     std::cout << "===============\n";
   }
 
-  auto patch4 = flat->insertBefore(flat->at(6));
+  auto patch4 = bb->insertBefore(bb->at(6));
   for (int i = 0; i < 40000; ++i) {
     patch4->insert<Add>(
         patch4->insert<Constant>(i),
         patch4->insert<Constant>(i));
   }
 
-  auto flat2 = flat->flatten();
-  delete flat;
+  bb = bb->flatten();
 
   int count = 0;
   // Simulate an analysis:
-  for (auto i : *flat2) {
+  for (auto i : *bb) {
     if (i->type == Node::Type::Add) {
       Node * l = ((Add*)i)->l();
       if (l->type == Node::Type::Constant) {
@@ -73,7 +71,7 @@ void test(bool print = false) {
   if (print)
     std::cout << count << "\n";
 
-  delete flat2;
+  delete bb;
 }
 
 using namespace std;
